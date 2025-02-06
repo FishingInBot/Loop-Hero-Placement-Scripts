@@ -13,7 +13,7 @@ MAX_OASIS = 50
 #   True means the cell is active (available), False means inactive.
 active_mask = [[True for _ in range(WIDTH)] for _ in range(HEIGHT)]
 
-# UI for Selecting Active Cells
+# UI for Selecting Active Cells and Oasis Value
 class CellSelector(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -26,8 +26,17 @@ class CellSelector(tk.Tk):
                 btn.grid(row=i, column=j, padx=1, pady=1)
                 self.buttons[(i, j)] = btn
                 btn.config(bg="white")
+                
+        # Add a label and entry for maximum oasis
+        self.max_oasis_label = tk.Label(self, text="Max Oasis:", justify="right")
+        self.max_oasis_label.grid(row=HEIGHT, column=0, columnspan=3, sticky="ne", padx=5, pady=5)
+        
+        self.max_oasis_entry = tk.Entry(self, width=2)
+        self.max_oasis_entry.grid(row=HEIGHT, column=3, columnspan=1, sticky="nw", padx=5, pady=5)
+        self.max_oasis_entry.insert(0, "50")  # default value
+        
         self.start_button = tk.Button(self, text="Start Optimization", command=self.on_start)
-        self.start_button.grid(row=HEIGHT, column=0, columnspan=WIDTH, sticky="we")
+        self.start_button.grid(row=HEIGHT+1, column=0, columnspan=WIDTH, sticky="we", padx=5, pady=5)
         self.selected = False
 
     def toggle_cell(self, i, j):
@@ -37,6 +46,17 @@ class CellSelector(tk.Tk):
         btn.config(bg="white" if active_mask[i][j] else "gray")
 
     def on_start(self):
+        global MAX_OASIS
+        try:
+            MAX_OASIS = int(self.max_oasis_entry.get())
+            if MAX_OASIS < 0:
+                raise ValueError()
+            if MAX_OASIS > 50:
+                MAX_OASIS = 50
+        except ValueError:
+            messagebox.showerror("Error", "Invalid maximum oasis value!")
+            return
+        
         if not any(active_mask[i][j] for i in range(HEIGHT) for j in range(WIDTH)):
             messagebox.showerror("Error", "No active cells selected!")
             return
