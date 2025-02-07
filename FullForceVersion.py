@@ -8,6 +8,7 @@ HEIGHT = 12
 
 # Other constants
 MAX_OASIS = 50
+MAX_MAQUIS = 25  # Maximum number of Maquis tiles that contribute a bonus
 
 # Global active mask:
 #   True means the cell is active (available), False means inactive.
@@ -34,6 +35,13 @@ class CellSelector(tk.Tk):
         self.max_oasis_entry = tk.Entry(self, width=2)
         self.max_oasis_entry.grid(row=HEIGHT, column=3, columnspan=1, sticky="nw", padx=5, pady=5)
         self.max_oasis_entry.insert(0, "50")  # default value
+
+        self.max_maquis_label = tk.Label(self, text="Max Maquis:", justify="right")
+        self.max_maquis_label.grid(row=HEIGHT, column=4, columnspan=4, sticky="ne", padx=5, pady=5)
+
+        self.max_maquis_entry = tk.Entry(self, width=2)
+        self.max_maquis_entry.grid(row=HEIGHT, column=8, columnspan=1, sticky="nw", padx=5, pady=5)
+        self.max_maquis_entry.insert(0, "25")  # default value
         
         self.start_button = tk.Button(self, text="Start Optimization", command=self.on_start)
         self.start_button.grid(row=HEIGHT+1, column=0, columnspan=WIDTH, sticky="we", padx=5, pady=5)
@@ -79,8 +87,6 @@ def neighbors(i, j):
 
 # State Representation
 # Our state is a tuple: (snake, dessert_mask)
-# - snake: a list of (i,j) coordinates representing a contiguous snake (all cells are rivers or oasis).
-# - dessert_mask: a 2D list (HEIGHT x WIDTH) of booleans.
 def init_dessert_mask():
     return [[False for _ in range(WIDTH)] for _ in range(HEIGHT)]
 
@@ -132,6 +138,9 @@ def state_to_layout(state):
            if dessert_mask is True AND the cell is adjacent to a snake cell, mark as 'D'
            else mark as 'T'
       - Inactive cells are marked 'I'
+      
+      Additionally, any Thicket ('T') that is adjacent to a Dessert ('D') is converted
+      into a Maquis ('M') tile.
     """
     snake_set = set(state[0])
     layout = []
@@ -154,6 +163,15 @@ def state_to_layout(state):
             else:
                 row.append('T')
         layout.append(row)
+    
+    # Convert any Thicket ('T') adjacent to a Dessert ('D') into a Maquis ('M')
+    for i in range(HEIGHT):
+        for j in range(WIDTH):
+            if layout[i][j] == 'T':
+                for ni, nj in neighbors(i, j):
+                    if layout[ni][nj] == 'D':
+                        layout[i][j] = 'M'
+                        break
     return layout
 
 # Scoring Functions
@@ -161,25 +179,26 @@ def total_score_layout(layout):
     """
     Total score is the sum of:
       - Thicket bonus: For each thicket ('T'), bonus = 2 * 2^(# adjacent River cells).
+      - Maquis bonus: For Maquis ('M') tiles, add 25 points each, up to MAX_MAQUIS tiles.
       - Oasis bonus: For each oasis cell ('O'), add 30 points, up to a maximum of MAX_OASIS cells.
     (Desserts themselves do nothing.)
     """
     score = 0.0
-    # Thicket bonus:
+    # Thicket bonus for 'T' tiles:
     for i in range(HEIGHT):
         for j in range(WIDTH):
             if layout[i][j] == 'T':
                 count = 0
                 for ni, nj in neighbors(i, j):
-                    if layout[ni][nj] in ['R']:  # count both river and oasis snake cells
+                    if layout[ni][nj] in ['R']:  # note: only river (and not oasis) counts here
                         count += 1
                 score += 2 * (2 ** count)
+    # Maquis bonus for 'M' tiles:
+    m_count = sum(1 for i in range(HEIGHT) for j in range(WIDTH) if layout[i][j] == 'M')
+    score += 25 * min(m_count, MAX_MAQUIS)
+    
     # Oasis bonus:
-    oasis_count = 0
-    for i in range(HEIGHT):
-        for j in range(WIDTH):
-            if layout[i][j] == 'O':
-                oasis_count += 1
+    oasis_count = sum(1 for i in range(HEIGHT) for j in range(WIDTH) if layout[i][j] == 'O')
     score += 30 * min(oasis_count, MAX_OASIS)
     return score
 
@@ -326,6 +345,7 @@ def display_layout(layout):
       - Rivers ('R'): SkyBlue
       - Oasis ('O'): MediumTurquoise
       - Desserts ('D'): LightSalmon
+      - Maquis ('M'): Orchid
       - Inactive ('I'): LightGray
     """
     window = tk.Tk()
@@ -341,6 +361,8 @@ def display_layout(layout):
                 bg = "MediumTurquoise"
             elif cell == 'D':
                 bg = "LightSalmon"
+            elif cell == 'M':
+                bg = "Orchid"
             else:  # 'I'
                 bg = "LightGray"
             label = tk.Label(window, text="", width=2, height=1,
@@ -380,12 +402,11 @@ def main():
     # Base values
     attackSpeed = 0
     enemyAttackSpeed = 0
+    enemyDamage = 0
     everythingHealth = 100
-    # Calculate the values of the layout based on the rules.
     for i in range(HEIGHT):
         for j in range(WIDTH):
             if best_layout[i][j] == 'T':
-                # Count River neighbors
                 count = sum(1 for ni, nj in neighbors(i, j) if best_layout[ni][nj] in ['R'])
                 attackSpeed += 2 * (2 ** count)
             elif best_layout[i][j] == 'D':
@@ -393,13 +414,17 @@ def main():
             elif best_layout[i][j] == 'O':  # oasis cells have flat value
                 attackSpeed -= 0.5
                 enemyAttackSpeed -= 1
+            elif best_layout[i][j] == 'M':
+                enemyAttackSpeed += 2
+                enemyDamage -= 2
+
     # Cap the values to the minimums/maximums, just in case.
     if enemyAttackSpeed < -50:
         enemyAttackSpeed = -50
     if everythingHealth < 1:
         everythingHealth = 1
 
-    print(f"Attack Speed: {attackSpeed}, Enemy Attack Speed: {enemyAttackSpeed}, Everything's Health: {everythingHealth}%")
+    print(f"Attack Speed: {attackSpeed}, Enemy Attack Speed: {enemyAttackSpeed}, Enemy Damage: {enemyDamage}%, Everything's Health: {everythingHealth}%")
 
     # 8. Display the final layout.
     display_layout(best_layout)
