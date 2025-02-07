@@ -79,7 +79,7 @@ def neighbors(i, j):
 
 # State Representation
 # Our state is a tuple: (snake, dessert_mask)
-# - snake: a list of (i,j) coordinates representing a contiguous snake (all cells are rivers).
+# - snake: a list of (i,j) coordinates representing a contiguous snake (all cells are rivers or oasis).
 # - dessert_mask: a 2D list (HEIGHT x WIDTH) of booleans.
 def init_dessert_mask():
     return [[False for _ in range(WIDTH)] for _ in range(HEIGHT)]
@@ -125,7 +125,9 @@ def choose_start():
 def state_to_layout(state):
     """
     Given state = (snake, dessert_mask):
-      - Cells in the snake are marked 'R'
+      - Snake cells are now marked as:
+            'O' if the snake cell is adjacent to at least one dessert candidate,
+            otherwise as 'R'
       - Active cells not in the snake:
            if dessert_mask is True AND the cell is adjacent to a snake cell, mark as 'D'
            else mark as 'T'
@@ -139,12 +141,18 @@ def state_to_layout(state):
             if not active_mask[i][j]:
                 row.append('I')
             elif (i, j) in snake_set:
-                row.append('R')
+                # Upgrade to oasis if any neighbor (that is active and not part of the snake)
+                # has its dessert flag turned on.
+                oasis = False
+                for ni, nj in neighbors(i, j):
+                    if active_mask[ni][nj] and (ni, nj) not in snake_set and state[1][ni][nj]:
+                        oasis = True
+                        break
+                row.append('O' if oasis else 'R')
             elif state[1][i][j] and any((ni, nj) in snake_set for ni, nj in neighbors(i, j)):
                 row.append('D')
             else:
                 row.append('T')
-        row = list(row)
         layout.append(row)
     return layout
 
@@ -152,10 +160,8 @@ def state_to_layout(state):
 def total_score_layout(layout):
     """
     Total score is the sum of:
-      - Thicket bonus: For each thicket ('T'), bonus = 2 * 2^(# adjacent snake cells).
-      - Oasis bonus: For each snake cell (always 'R') that is adjacent to at least one dessert ('D'),
-                     count it as an oasis.
-                       Global oasis bonus = 0.5 * min(oasis_count, MAX_OASIS)
+      - Thicket bonus: For each thicket ('T'), bonus = 2 * 2^(# adjacent River cells).
+      - Oasis bonus: For each oasis cell ('O'), add 30 points, up to a maximum of MAX_OASIS cells.
     (Desserts themselves do nothing.)
     """
     score = 0.0
@@ -165,16 +171,15 @@ def total_score_layout(layout):
             if layout[i][j] == 'T':
                 count = 0
                 for ni, nj in neighbors(i, j):
-                    if layout[ni][nj] == 'R':
+                    if layout[ni][nj] in ['R']:  # count both river and oasis snake cells
                         count += 1
                 score += 2 * (2 ** count)
     # Oasis bonus:
     oasis_count = 0
     for i in range(HEIGHT):
         for j in range(WIDTH):
-            if layout[i][j] == 'R':
-                if any(layout[ni][nj] == 'D' for ni, nj in neighbors(i, j)):
-                    oasis_count += 1
+            if layout[i][j] == 'O':
+                oasis_count += 1
     score += 30 * min(oasis_count, MAX_OASIS)
     return score
 
@@ -318,7 +323,8 @@ def display_layout(layout):
     """
     Display the final layout in a Tkinter window using soft colors:
       - Thickets ('T'): PaleGreen
-      - Rivers ('R'): SkyBlue; if adjacent to a dessert (i.e. upgraded to oasis), shown as MediumTurquoise
+      - Rivers ('R'): SkyBlue
+      - Oasis ('O'): MediumTurquoise
       - Desserts ('D'): LightSalmon
       - Inactive ('I'): LightGray
     """
@@ -330,11 +336,9 @@ def display_layout(layout):
             if cell == 'T':
                 bg = "PaleGreen"
             elif cell == 'R':
-                # River cells adjacent to a dessert become oasis.
-                if any(layout[ni][nj] == 'D' for ni, nj in neighbors(i, j)):
-                    bg = "MediumTurquoise"
-                else:
-                    bg = "SkyBlue"
+                bg = "SkyBlue"
+            elif cell == 'O':
+                bg = "MediumTurquoise"
             elif cell == 'D':
                 bg = "LightSalmon"
             else:  # 'I'
@@ -356,7 +360,7 @@ def main():
         return
 
     # 3. Build an initial snake starting at the chosen border cell.
-    initial_snake = [start]  # snake is a list of (i,j) coordinates (all rivers)
+    initial_snake = [start]  # snake is a list of (i,j) coordinates (all rivers initially)
     initial_snake = random_regrow(initial_snake, 0)
     
     # 4. Initialize dessert grid (all False).
@@ -372,7 +376,7 @@ def main():
     best_layout = state_to_layout(best_state)
     print("Best snake length:", len(best_state[0]), "Best Score:", best_score)
 
-    # 7. log the stats from the best layout on the console.
+    # 7. Log the stats from the best layout on the console.
     # Base values
     attackSpeed = 0
     enemyAttackSpeed = 0
@@ -381,15 +385,13 @@ def main():
     for i in range(HEIGHT):
         for j in range(WIDTH):
             if best_layout[i][j] == 'T':
-                # Thickets increase in value based on the number of adjacent 'R' cells. 2 * 2^(# adjacent 'R' cells)
-                attackSpeed += 2 * (2 ** sum(1 for ni, nj in neighbors(i, j) if best_layout[ni][nj] == 'R'))
+                # Count River neighbors
+                count = sum(1 for ni, nj in neighbors(i, j) if best_layout[ni][nj] in ['R'])
+                attackSpeed += 2 * (2 ** count)
             elif best_layout[i][j] == 'D':
-                # Desserts increase in value based on the number of adjacent 'R' cells. -1 * 2^(# adjacent 'R' cells)
-                everythingHealth += -1 * (2 ** sum(1 for ni, nj in neighbors(i, j) if best_layout[ni][nj] == 'R'))
-            # Oasis cells
-            elif best_layout[i][j] == 'R' and any(best_layout[ni][nj] == 'D' for ni, nj in neighbors(i, j)):
-                # Oasis cells have flat value. -.5 attack speed, -1 enemy attack speed.
-                attackSpeed -= .5
+                everythingHealth += -1
+            elif best_layout[i][j] == 'O':  # oasis cells have flat value
+                attackSpeed -= 0.5
                 enemyAttackSpeed -= 1
     # Cap the values to the minimums/maximums, just in case.
     if enemyAttackSpeed < -50:
@@ -399,7 +401,7 @@ def main():
 
     print(f"Attack Speed: {attackSpeed}, Enemy Attack Speed: {enemyAttackSpeed}, Everything's Health: {everythingHealth}%")
 
-    # 7. Display the final layout.
+    # 8. Display the final layout.
     display_layout(best_layout)
 
 if __name__ == '__main__':
