@@ -66,7 +66,7 @@ class CellSelector(tk.Tk):
 def run_selection():
     app = CellSelector()
     app.mainloop()
-    
+
 # Grid Utility Functions
 def in_bounds(i, j):
     return 0 <= i < HEIGHT and 0 <= j < WIDTH
@@ -78,10 +78,11 @@ def neighbors(i, j):
             yield ni, nj
 
 # State Representation
-# Our state is a tuple: (snake, dessert_mask)
-# - snake: a list of (i,j) coordinates representing a contiguous snake (all cells are rivers or oasis).
-# - dessert_mask: a 2D list (HEIGHT x WIDTH) of booleans.
+# We now use a tuple: (snake, dessert_mask, suburb_mask)
 def init_dessert_mask():
+    return [[False for _ in range(WIDTH)] for _ in range(HEIGHT)]
+
+def init_suburb_mask():
     return [[False for _ in range(WIDTH)] for _ in range(HEIGHT)]
 
 def choose_start():
@@ -101,7 +102,7 @@ def choose_start():
             candidates.append((i, WIDTH-1))
     if candidates:
         return random.choice(candidates)
-    # Otherwise, try top border (avoid corners) and bottom border.
+    # Otherwise, try top and bottom borders.
     for j in range(1, WIDTH-1):
         if active_mask[0][j]:
             candidates.append((0, j))
@@ -124,16 +125,19 @@ def choose_start():
 
 def state_to_layout(state):
     """
-    Given state = (snake, dessert_mask):
-      - Snake cells are now marked as:
-            'O' if the snake cell is adjacent to at least one dessert candidate,
-            otherwise as 'R'
-      - Active cells not in the snake:
-           if dessert_mask is True AND the cell is adjacent to a snake cell, mark as 'D'
-           else mark as 'T'
-      - Inactive cells are marked 'I'
+    Converts state (snake, dessert_mask, suburb_mask) to a layout.
+    Snake cells:
+      - Marked 'O' (oasis) if any adjacent active, non-snake cell has its dessert flag on,
+      - otherwise 'R' (river).
+    Non-snake active cells:
+      - If flagged in suburb_mask: 'S'
+      - Else if dessert flag is on and adjacent to snake: 'D'
+      - Otherwise: 'T' (thicket)
+    Finally, any thicket ('T') adjacent to a dessert ('D') becomes a Maquis tile ('M').
+    Inactive cells are marked 'I'.
     """
-    snake_set = set(state[0])
+    snake, dessert_mask, suburb_mask = state
+    snake_set = set(snake)
     layout = []
     for i in range(HEIGHT):
         row = []
@@ -141,19 +145,26 @@ def state_to_layout(state):
             if not active_mask[i][j]:
                 row.append('I')
             elif (i, j) in snake_set:
-                # Upgrade to oasis if any neighbor (that is active and not part of the snake)
-                # has its dessert flag turned on.
                 oasis = False
                 for ni, nj in neighbors(i, j):
-                    if active_mask[ni][nj] and (ni, nj) not in snake_set and state[1][ni][nj]:
+                    if active_mask[ni][nj] and (ni, nj) not in snake_set and dessert_mask[ni][nj]:
                         oasis = True
                         break
                 row.append('O' if oasis else 'R')
-            elif state[1][i][j] and any((ni, nj) in snake_set for ni, nj in neighbors(i, j)):
-                row.append('D')
             else:
-                row.append('T')
+                if suburb_mask[i][j]:
+                    row.append('S')
+                elif dessert_mask[i][j] and any((ni, nj) in snake_set for ni, nj in neighbors(i, j)):
+                    row.append('D')
+                else:
+                    row.append('T')
         layout.append(row)
+    # Convert thicket tiles to Maquis if adjacent to a dessert tile.
+    for i in range(HEIGHT):
+        for j in range(WIDTH):
+            if layout[i][j] == 'T':
+                if any(layout[ni][nj] == 'D' for ni, nj in neighbors(i, j)):
+                    layout[i][j] = 'M'
     return layout
 
 # Scoring Functions
@@ -161,26 +172,39 @@ def total_score_layout(layout):
     """
     Total score is the sum of:
       - Thicket bonus: For each thicket ('T'), bonus = 2 * 2^(# adjacent River cells).
-      - Oasis bonus: For each oasis cell ('O'), add 30 points, up to a maximum of MAX_OASIS cells.
-    (Desserts themselves do nothing.)
+      - Oasis bonus: 30 points per oasis, capped at MAX_OASIS cells.
+      - Suburb bonus: Each suburb ('S') gives a base bonus of 1 (or 2 if surrounded on all 4 sides)
+        multiplied by 2^(# adjacent River cells), summed and then scaled (10×) but capped to 25 total bonus.
+      - Maquis tiles ('M') lose the thicket bonus. Here we subtract half the thicket bonus they would have given.
     """
     score = 0.0
     # Thicket bonus:
     for i in range(HEIGHT):
         for j in range(WIDTH):
             if layout[i][j] == 'T':
-                count = 0
-                for ni, nj in neighbors(i, j):
-                    if layout[ni][nj] in ['R']:  # count both river and oasis snake cells
-                        count += 1
+                count = sum(1 for ni, nj in neighbors(i, j) if layout[ni][nj] in ['R'])
                 score += 2 * (2 ** count)
     # Oasis bonus:
-    oasis_count = 0
+    oasis_count = sum(1 for i in range(HEIGHT) for j in range(WIDTH) if layout[i][j]=='O')
+    score += 30 * min(oasis_count, MAX_OASIS)
+    # Suburb bonus:
+    suburb_bonus_total = 0
     for i in range(HEIGHT):
         for j in range(WIDTH):
-            if layout[i][j] == 'O':
-                oasis_count += 1
-    score += 30 * min(oasis_count, MAX_OASIS)
+            if layout[i][j] == 'S':
+                suburb_neighbors = sum(1 for ni, nj in neighbors(i, j) if layout[ni][nj] == 'S')
+                base = 2 if suburb_neighbors == 4 else 1
+                river_count = sum(1 for ni, nj in neighbors(i, j) if layout[ni][nj] in ['R'])
+                bonus = base * (2 ** river_count)
+                suburb_bonus_total += bonus
+    suburb_score = 10 * min(suburb_bonus_total, 25)
+    score += suburb_score
+    # Maquis penalty:
+    for i in range(HEIGHT):
+        for j in range(WIDTH):
+            if layout[i][j] == 'M':
+                count = sum(1 for ni, nj in neighbors(i, j) if layout[ni][nj] in ['R'])
+                score -= 2 * (2 ** count) * 0.5
     return score
 
 def total_score_state(state):
@@ -189,13 +213,6 @@ def total_score_state(state):
 
 # Snake Moves (Connectivity Moves)
 def random_regrow(snake, trunc_index):
-    """
-    Given a snake (list of (i,j)) and a truncation index,
-    remove cells after trunc_index and regrow the snake randomly.
-    Only active cells not already in the snake are allowed.
-    The candidate must be adjacent to the current head and not adjacent
-    to any snake cell except the current head.
-    """
     new_snake = snake[:trunc_index+1]
     snake_set = set(new_snake)
     head_i, head_j = new_snake[-1]
@@ -208,7 +225,6 @@ def random_regrow(snake, trunc_index):
                 continue
             if (ni, nj) in snake_set:
                 continue
-            # Ensure candidate does not touch any snake cell except the current head.
             valid = True
             for xi, xj in neighbors(ni, nj):
                 if (xi, xj) in snake_set and (xi, xj) != (head_i, head_j):
@@ -226,30 +242,18 @@ def random_regrow(snake, trunc_index):
     return new_snake
 
 def snake_move(state):
-    """
-    Perform a snake move:
-      - Randomly choose a truncation point in the snake and regrow the snake.
-      - Clear any dessert marks from cells that become part of the snake.
-    """
-    current_snake, current_dessert = state
+    current_snake, current_dessert, current_suburb = state
     if len(current_snake) <= 1:
         return state
     trunc_index = random.randint(0, len(current_snake) - 1)
     new_snake = random_regrow(current_snake, trunc_index)
     new_dessert = copy.deepcopy(current_dessert)
-    # Clear dessert marks for cells now in the snake.
     for (i, j) in new_snake:
         new_dessert[i][j] = False
-    return (new_snake, new_dessert)
+    return (new_snake, new_dessert, current_suburb)
 
-# Dessert Moves
 def dessert_move(state):
-    """
-    Perform a dessert move:
-      - Choose a random active cell (not in the snake) that is adjacent to at least one snake cell.
-      - Flip its dessert flag.
-    """
-    current_snake, current_dessert = state
+    current_snake, current_dessert, current_suburb = state
     snake_set = set(current_snake)
     candidates = []
     for i in range(HEIGHT):
@@ -263,20 +267,59 @@ def dessert_move(state):
     if not candidates:
         return state
     i, j = random.choice(candidates)
-    new_state = (current_snake, copy.deepcopy(current_dessert))
-    new_state[1][i][j] = not new_state[1][i][j]
-    return new_state
+    new_dessert = copy.deepcopy(current_dessert)
+    new_dessert[i][j] = not new_dessert[i][j]
+    return (current_snake, new_dessert, current_suburb)
+
+def valid_suburb_cluster(suburb_mask):
+    # Gather all suburb cells.
+    cells = [(i, j) for i in range(HEIGHT) for j in range(WIDTH) if suburb_mask[i][j]]
+    # If there's only one suburb tile, isolation isn't a concern.
+    if len(cells) <= 1:
+        return True
+    # Otherwise, every suburb cell must have at least one adjacent suburb cell.
+    for i, j in cells:
+        if not any(suburb_mask[ni][nj] for ni, nj in neighbors(i, j)):
+            return False
+    return True
+
+def suburb_move(state):
+    current_snake, current_dessert, current_suburb = state
+    suburb_exists = any(current_suburb[i][j] for i in range(HEIGHT) for j in range(WIDTH))
+    candidates = []
+    for i in range(HEIGHT):
+        for j in range(WIDTH):
+            if not active_mask[i][j]:
+                continue
+            if (i, j) in current_snake:
+                continue
+            # Only consider cells not already marked as suburb.
+            if current_suburb[i][j]:
+                continue
+            # If a suburb already exists, new additions must be adjacent.
+            if suburb_exists:
+                if any(current_suburb[ni][nj] for ni, nj in neighbors(i, j)):
+                    # Simulate the addition.
+                    new_suburb = copy.deepcopy(current_suburb)
+                    new_suburb[i][j] = True
+                    if valid_suburb_cluster(new_suburb):
+                        candidates.append((i, j))
+            else:
+                # No suburb exists yet; any cell is allowed.
+                new_suburb = copy.deepcopy(current_suburb)
+                new_suburb[i][j] = True
+                if valid_suburb_cluster(new_suburb):
+                    candidates.append((i, j))
+    if not candidates:
+        return state
+    i, j = random.choice(candidates)
+    new_suburb = copy.deepcopy(current_suburb)
+    new_suburb[i][j] = True
+    return (current_snake, current_dessert, new_suburb)
+
 
 # Simulated Annealing
 def simulated_annealing(initial_state, time_limit=300):
-    """
-    Optimize the configuration (snake and dessert placements) using simulated annealing.
-    Two move types:
-      - With 70% probability, perform a snake move.
-      - With 30% probability, perform a dessert move.
-    The temperature cools slowly (total_iterations = 500,000) and the maximum runtime is 5 minutes.
-    The search stops immediately if the temperature falls to 0.10.
-    """
     current_state = initial_state
     current_score = total_score_state(current_state)
     best_state = current_state
@@ -293,16 +336,17 @@ def simulated_annealing(initial_state, time_limit=300):
         frac = min(1.0, iteration / total_iterations)
         T = T0 * (1 - frac) + T_end * frac
 
-        # Stop if temperature falls to 0.10
         if T <= 0.10:
             print("Temperature threshold reached. Stopping optimization.")
             break
 
-        # Choose move type.
-        if random.random() < 0.7:
+        r = random.random()
+        if r < 0.6:
             new_state = snake_move(current_state)
-        else:
+        elif r < 0.85:
             new_state = dessert_move(current_state)
+        else:
+            new_state = suburb_move(current_state)
 
         new_score = total_score_state(new_state)
         delta = new_score - current_score
@@ -320,14 +364,6 @@ def simulated_annealing(initial_state, time_limit=300):
 
 # Display Final Layout (Softer Colors)
 def display_layout(layout):
-    """
-    Display the final layout in a Tkinter window using soft colors:
-      - Thickets ('T'): PaleGreen
-      - Rivers ('R'): SkyBlue
-      - Oasis ('O'): MediumTurquoise
-      - Desserts ('D'): LightSalmon
-      - Inactive ('I'): LightGray
-    """
     window = tk.Tk()
     window.title("Final Layout")
     for i in range(HEIGHT):
@@ -335,73 +371,79 @@ def display_layout(layout):
             cell = layout[i][j]
             if cell == 'T':
                 bg = "PaleGreen"
+            elif cell == 'M':
+                bg = "LightGreen"
             elif cell == 'R':
                 bg = "SkyBlue"
             elif cell == 'O':
                 bg = "MediumTurquoise"
             elif cell == 'D':
                 bg = "LightSalmon"
+            elif cell == 'S':
+                bg = "Khaki"
             else:  # 'I'
                 bg = "LightGray"
-            label = tk.Label(window, text="", width=2, height=1,
+            label = tk.Label(window, text=cell, width=2, height=1,
                              bg=bg, relief="flat", borderwidth=1)
             label.grid(row=i, column=j, padx=1, pady=1)
     window.mainloop()
 
 # Main
 def main():
-    # 1. Let the user select active cells.
     run_selection()
-    
-    # 2. Choose a starting border cell (preferably far left or right, not in a corner).
     start = choose_start()
     if start is None:
         messagebox.showerror("Error", "No active border cell available!")
         return
 
-    # 3. Build an initial snake starting at the chosen border cell.
-    initial_snake = [start]  # snake is a list of (i,j) coordinates (all rivers initially)
+    initial_snake = [start]
     initial_snake = random_regrow(initial_snake, 0)
-    
-    # 4. Initialize dessert grid (all False).
     initial_dessert = init_dessert_mask()
-    
-    # 5. Initial state: (snake, dessert_mask)
-    initial_state = (initial_snake, initial_dessert)
+    initial_suburb = init_suburb_mask()
+    initial_state = (initial_snake, initial_dessert, initial_suburb)
     init_score = total_score_state(initial_state)
     print("Initial snake length:", len(initial_snake), "Score:", init_score)
 
-    # 6. Run simulated annealing for up to 5 minutes.
     best_state, best_score = simulated_annealing(initial_state, time_limit=300)
     best_layout = state_to_layout(best_state)
     print("Best snake length:", len(best_state[0]), "Best Score:", best_score)
 
-    # 7. Log the stats from the best layout on the console.
-    # Base values
+    # Final stats calculation
     attackSpeed = 0
     enemyAttackSpeed = 0
     everythingHealth = 100
-    # Calculate the values of the layout based on the rules.
+    maquis_attack_bonus = 0
+    maquis_enemy_bonus = 0
+    xp_bonus_total = 0
     for i in range(HEIGHT):
         for j in range(WIDTH):
             if best_layout[i][j] == 'T':
-                # Count River neighbors
                 count = sum(1 for ni, nj in neighbors(i, j) if best_layout[ni][nj] in ['R'])
                 attackSpeed += 2 * (2 ** count)
+            elif best_layout[i][j] == 'M':
+                count = sum(1 for ni, nj in neighbors(i, j) if best_layout[ni][nj] in ['R'])
+                bonus = 2 * (2 ** count)
+                maquis_attack_bonus += bonus
+                maquis_enemy_bonus += bonus
             elif best_layout[i][j] == 'D':
                 everythingHealth += -1
-            elif best_layout[i][j] == 'O':  # oasis cells have flat value
+            elif best_layout[i][j] == 'O':
                 attackSpeed -= 0.5
                 enemyAttackSpeed -= 1
-    # Cap the values to the minimums/maximums, just in case.
-    if enemyAttackSpeed < -50:
-        enemyAttackSpeed = -50
-    if everythingHealth < 1:
-        everythingHealth = 1
+            elif best_layout[i][j] == 'S':
+                suburb_neighbors = sum(1 for ni, nj in neighbors(i, j) if best_layout[ni][nj] == 'S')
+                base = 2 if suburb_neighbors == 4 else 1
+                river_count = sum(1 for ni, nj in neighbors(i, j) if best_layout[ni][nj] in ['R'])
+                xp_bonus_total += base * (2 ** river_count)
+    # Cap maquis stacking (25 times max, so bonus capped at 50)
+    maquis_attack_bonus = min(maquis_attack_bonus, 50)
+    maquis_enemy_bonus = min(maquis_enemy_bonus, 50)
+    attackSpeed += maquis_attack_bonus
+    enemyAttackSpeed -= maquis_enemy_bonus
+    xp_bonus_total = min(xp_bonus_total, 25)
 
     print(f"Attack Speed: {attackSpeed}, Enemy Attack Speed: {enemyAttackSpeed}, Everything's Health: {everythingHealth}%")
-
-    # 8. Display the final layout.
+    print(f"XP Bonus per kill: {xp_bonus_total}")
     display_layout(best_layout)
 
 if __name__ == '__main__':
